@@ -1,5 +1,7 @@
 import os
+import time
 import re
+import threading
 from fastapi import FastAPI, Request
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -9,6 +11,8 @@ import uvicorn
 
 from consts import *
 
+answered_cache = {}  # key: unique event or thread, value: timestamp last answered
+ANSWER_TIMEOUT = 60 * 60  # 2 hours in seconds
 load_dotenv()
 app = FastAPI()
 
@@ -19,6 +23,18 @@ slack_client = WebClient(token=SLACK_BOT_TOKEN)
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 
+def cleanup_answered_cache():
+    now = time.time()
+    to_delete = [key for key, expiry in answered_cache.items() if expiry < now]
+    for key in to_delete:
+        del answered_cache[key]
+    # Run again in 1 minute (60 seconds)
+    threading.Timer(60, cleanup_answered_cache).start()
+
+
+cleanup_answered_cache()
+
+
 @app.post("/slack/events")
 async def slack_events(req: Request):
     data = await req.json()
@@ -26,6 +42,16 @@ async def slack_events(req: Request):
         return {"challenge": data["challenge"]}
     event = data.get("event", {})
     event_type = event.get("type")
+
+    # Unique key for each user in each channel
+    event_key = f"{event.get('channel')}_{event.get('user')}"
+    now = time.time()
+
+    # Skip if already answered in last 2 hours
+    if event_key in answered_cache:
+        if now - answered_cache[event_key] < ANSWER_TIMEOUT:
+            print("Already answered recently, skipping.")
+            return {"ok": True}
 
     if event_type == "app_mention":
         text = event.get("text", "")
@@ -63,6 +89,9 @@ async def slack_events(req: Request):
                 slack_client.chat_postMessage(channel=channel_id, text=reply_msg)
             except SlackApiError as e:
                 print(f"Slack error: {e.response['error']}")
+
+        # Mark as answered
+        answered_cache[event_key] = time.time() + ANSWER_TIMEOUT
 
     return {"ok": True}
 
