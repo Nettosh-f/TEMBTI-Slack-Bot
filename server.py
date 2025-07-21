@@ -1,0 +1,71 @@
+import os
+import re
+from fastapi import FastAPI, Request
+from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError
+from dotenv import load_dotenv
+from openai import OpenAI
+import uvicorn
+
+from consts import *
+
+load_dotenv()
+app = FastAPI()
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+
+slack_client = WebClient(token=SLACK_BOT_TOKEN)
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+@app.post("/slack/events")
+async def slack_events(req: Request):
+    data = await req.json()
+    if "challenge" in data:
+        return {"challenge": data["challenge"]}
+    event = data.get("event", {})
+    event_type = event.get("type")
+
+    if event_type == "app_mention":
+        text = event.get("text", "")
+        channel_id = event.get("channel")
+        user_id = event.get("user")
+
+        # Regex to extract: [YOUR MBTI] @mention [THEIR MBTI]
+        pattern = r'(\b[A-Z]{4}\b).*<@([A-Z0-9]+)>.*?(\b[A-Z]{4}\b)'
+        match = re.search(pattern, text)
+        if match:
+            mbti_1 = match.group(1)
+            mentioned_user = match.group(2)
+            mbti_2 = match.group(3)
+
+            if mbti_1 in MBTI_TYPES and mbti_2 in MBTI_TYPES:
+                print(f"Comparing {mbti_1} with {mbti_2}")
+                prompt = (
+                    f"Compare a romantic couple with MBTI types {mbti_1} and {mbti_2}. "
+                    "Give a detailed compatibility analysis in 2 paragraphs: one about their strengths and one about their challenges."
+                )
+                # Call OpenAI
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o",  # Or "gpt-4.1"
+                    messages=[
+                        {"role": "system", "content": "You are an expert on MBTI couple dynamics."},
+                        {"role": "user", "content": prompt}
+                    ]
+                )
+                reply = response.choices[0].message.content.strip()
+                reply_msg = f"<@{user_id}> ({mbti_1}) + <@{mentioned_user}> ({mbti_2})\n\n{reply}"
+            else:
+                reply_msg = "Invalid MBTI types provided. Please use format: `@SlackBot [Your MBTI] @user [Their MBTI]`"
+
+            try:
+                slack_client.chat_postMessage(channel=channel_id, text=reply_msg)
+            except SlackApiError as e:
+                print(f"Slack error: {e.response['error']}")
+
+    return {"ok": True}
+
+if __name__ == "__main__":
+
+    uvicorn.run("server:app", host="127.0.0.1", port=3000, reload=True)
