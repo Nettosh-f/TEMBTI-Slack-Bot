@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import uvicorn
 from io import BytesIO
-import pymupdf
+import fitz
 import base64
 from PIL import Image
 from consts import *
