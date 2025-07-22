@@ -3,6 +3,8 @@ from io import BytesIO
 from PIL import Image
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
+import fitz
+
 
 def pdf_to_images_pymupdf(pdf_bytes):
     images = []
@@ -43,3 +45,4 @@ def create_pdf_from_text(text):
     c.save()
     buf.seek(0)
     return buf
+
