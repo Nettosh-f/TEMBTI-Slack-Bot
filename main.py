@@ -149,6 +149,8 @@ async def slack_insight(
         insight = response.choices[0].message.content.strip()
         insight_slack = f"Your MBTI report insight:\n\n{slack_format(insight)}"
         pdf_file = create_pdf_from_text(insight)
+    except Exception as e:
+        return PlainTextResponse(f"Error while analyzing MBTI report: {str(e)}", status_code=500)
 
     upload_response = slack_client.files_upload(
         channels=channel_id,
