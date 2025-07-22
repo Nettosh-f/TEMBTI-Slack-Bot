@@ -2,14 +2,20 @@ import os
 import time
 import re
 import threading
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, Form, UploadFile, File, Request
+from fastapi.responses import PlainTextResponse
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
 from openai import OpenAI
 import uvicorn
-
+from io import BytesIO
+import pymupdf
+import base64
+from PIL import Image
 from consts import *
+from utils import pdf_to_images_pymupdf, slack_format, create_pdf_from_text
+
 
 answered_cache = {}  # key: unique event or thread, value: timestamp last answered
 ANSWER_TIMEOUT = 60 * 60  # 2 hours in seconds
@@ -100,6 +106,62 @@ async def slack_events(req: Request):
 def read_root():
     return {"status": "running"}
 
+
+@app.post("/slack/insight")
+async def slack_insight(
+    request: Request,
+    token: str = Form(...),
+    user_id: str = Form(...),
+    channel_id: str = Form(...),
+    text: str = Form(""),
+    files: list[UploadFile] = File(None)  # Slack sends files as multipart
+):
+    # Optional: Validate token (check it's from Slack)
+    if token != os.getenv("SLACK_VERIFICATION_TOKEN"):
+        return PlainTextResponse("Invalid token", status_code=403)
+    if not file or not file.filename.lower().endswith('.pdf'):
+        return PlainTextResponse("Please attach a PDF MBTI report to the command.", status_code=200)
+    pdf_bytes = await file.read()
+    extra_prompt = text.strip() if text else ""
+    image_messages = pdf_to_images_pymupdf(BytesIO(pdf_bytes))
+
+    # Your custom system prompt
+    system_prompt = (
+        "You are an MBTI expert. Analyze the following official MBTI report. "
+        "Summarize key strengths, blind spots, communication styles, and give actionable advice. "
+        "Write as if addressing the report's subject personally. give 2-3 paragraphs maximum."
+    )
+
+    user_message = [{"type": "text", "text": "Analyze this MBTI report."}]
+    if extra_prompt:
+        user_message.append({"type": "text", "text": extra_prompt})
+    user_message += image_messages
+
+    try:
+        response = openai_client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=900
+        )
+        insight = response.choices[0].message.content.strip()
+        insight_slack = f"Your MBTI report insight:\n\n{slack_format(insight)}"
+        pdf_file = create_pdf_from_text(insight)
+
+    upload_response = slack_client.files_upload(
+        channels=channel_id,
+        file=pdf_file,
+        filename="mbti_insight.pdf",
+        title="MBTI Insight Report",
+        initial_comment="Download the detailed insight as PDF:"
+    )
+    slack_client.chat_postMessage(
+        channel=channel_id,
+        text=insight_slack
+    )
+    return PlainTextResponse("", status_code=200)
 
 if __name__ == "__main__":
 
